@@ -67,3 +67,37 @@ VMX操作规定了在处理器操作的限制，下面是细节：
 - 如果逻辑处理器在A20M模式下，`VMXON`会失败。一旦处理器在VMX操作中，A20M中断会阻塞。所以，在VMX操作中，不可能在A20M模式。
 - 逻辑处理器在VMX根操作中，INIT信号会阻塞。在VMX非根操作中不会阻塞。相反的，INIT会导致VM Exit。
 - 只有当IA32_VMX_MISC[14]被读到时1的时候，Intel® Processor Trace (Intel PT)才能被用于VMX操作中。在支持Intel PT但是不允许使用VMX操作的处理器中，执行VMXON会清除`IA32_RTIT_CTL.TraceEn`；尝试在VMX操作(包括VMX根操作)使用`WRMSR`指令设置这一位会导致普通包括异常。
+
+## 第24章 虚拟机控制结构
+
+### 24.1 综述
+
+逻辑处理器在VMX操作中会使用到虚拟机控制数据结构(VMCS)。这些数据结构管理这进入和退出VMX非根操作(VM Entry和VM Exit)，也管理着处理器在VMX非根操作的行为。这个结构被新指令VMCLEAR, VMPTRLD, VMREAD, 和VMWRITE操控。
+
+VMM可以针对它支持的虚拟机使用不同的VMCS。对于有多个逻辑处理器(虚拟处理器)的虚拟户，VMM可以对每个虚拟处理器使用不同的VMCS。
+
+每个逻辑处理器为VMCS在内存中分配一个区域，这个区域叫做VMCM区域。软件通过64位物理地址(VMCS指针)引用指定的VMCS。VMCS指针必须分配在4KB边界(11:0位必须为0)，这些指针在设置位时不能超过处理器的物理地址宽度。
+
+一个逻辑处理器也许会维持许多VMCS存活。处理器也许会通过在内存或者处理器中维持一个VMCS存活状态来优化VMX操作。在一个给定的时刻，至多只有一个VMCS是当前VMCS(文档中频繁提到的VMCS是指当前VMCS)。VMCLEAR, VMPTRLD, VMREAD, 和VMWRITE指令只能操作当前VMCS。
+
+下面描述了逻辑处理器如果决定哪个VMCS是激活的或者是当前的：
+
+- VMPTRLD指令的内存操作数是VMCS的地址。在执行完这个指令后，VMCS在逻辑处理器中是激活的和当前的。其他VMCS可以保持激活状态，但是不再是当前状态。
+- VMCS在当前VMCS链接的指针域是它自己的地址。如果VM Entry在“VMCS遮蔽”VM执行控制的情况下成功执行，VMCS指针域指向的VMCS在逻辑处理器上变成激活的。当前的VMCS一致性没有改变。
+- VMCLEAR指令的内存操作数也是VMCS的地址。在执行完这条指令之后，VMCS既不是激活的也不是当前的。如果这个VMCS在逻辑处理器中是当前的，那么这个逻辑处理器不再有当前VMCS。
+
+VMPTRST指令在特定的内存位置存储了逻辑处理器当前VMCS的地址（如果没有你当前VMCS，这个被存储的值为`FFFFFFFF_FFFFFFFFH`。
+
+在VMCS的开始状态要确定要用哪一个VM Entry指令：VMLAUNCH指令要求VMCS的开始状态是“clear”；VMRESUME指令要求VMCS的开始状态是“launched”。逻辑处理器在相对应的VMCS区域维持VMCS的开始状态。下面描述了逻辑处理器如何管理VMCS的开始状态。
+
+- 如果当前VMCS的开始状态是"clear"，VMLAUNCH指令的成功执行将改变开始状态为"launched"。
+- VMCLEAR指令的内存操作数是VMCS的地址，执行完之后，VMCS的开始状态为"clear"。
+- 没有其他的方法修改VMCS的开始状态(不能使用VMWRITE修改)，也没有直接的方法读取它(不能使用VMREAD)
+
+下图表示了VMCS的不同状态。用X表示VMCS，用Y表示其他的任何一个VMCS。因此：`VMPTRLD X`使X变成激活和当前的；`VMPTRLD Y`使X不是当前的(因为它使Y变成当前的)；如果X是当前的并且它的开始状态为"clear"，`VMLAUNCH`使X的开始状态为"launched"；`VMCLEAR X`使X变的非激活和非当前的，并且X的开始状态为"clear"。
+
+下图没有陈述不改变参数相关的VMCS状态的操作(比如当X已经是当前状态时执行`VMPTRLD X`)。注意：`VMCLEAR X`使X变成非激活、不是当前的、清空的。即使X不是当前状态（即使X没有初始化等等）。
+
+![](image/24_1.PNG)
+
+因为遮罩VMCS不能用于VM Entry，遮罩VMCS的开始状态时没有意义的。上图没有陈述遮罩VMCS激活的所有方式。
